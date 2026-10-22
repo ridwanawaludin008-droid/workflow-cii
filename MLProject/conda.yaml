@@ -1,0 +1,9 @@
+name: iris-mlflow
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - mlflow>=3.0,<4
+      - scikit-learn>=1.5,<2

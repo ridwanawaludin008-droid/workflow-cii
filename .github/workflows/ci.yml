@@ -1,0 +1,45 @@
+name: MLflow Project CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Conda environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: iris-mlflow
+          environment-file: MLProject/conda.yaml
+          auto-activate: true
+          channels: conda-forge
+
+      - name: Configure local MLflow tracking
+        shell: bash
+        run: echo "MLFLOW_TRACKING_URI=sqlite:///$GITHUB_WORKSPACE/mlflow.db" >> "$GITHUB_ENV"
+
+      - name: Run MLflow Project and retrain model
+        shell: bash -el {0}
+        run: mlflow run ./MLProject --env-manager=local --experiment-name iris-workflow-ci
+
+      - name: Save MLflow results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iris-mlflow-results
+          path: |
+            mlflow.db
+            mlartifacts/
+            MLProject/modelling.log
+          if-no-files-found: warn
