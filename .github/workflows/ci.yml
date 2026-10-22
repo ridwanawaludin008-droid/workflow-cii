@@ -30,7 +30,7 @@ jobs:
         run: echo "MLFLOW_TRACKING_URI=sqlite:///$GITHUB_WORKSPACE/mlflow.db" >> "$GITHUB_ENV"
 
       - name: Prepare MLflow experiment artifacts
-        shell: bash
+        shell: bash -el {0}
         run: |
           python - <<'PY'
           import mlflow
