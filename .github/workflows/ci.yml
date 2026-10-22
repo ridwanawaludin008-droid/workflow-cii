@@ -29,9 +29,33 @@ jobs:
         shell: bash
         run: echo "MLFLOW_TRACKING_URI=sqlite:///$GITHUB_WORKSPACE/mlflow.db" >> "$GITHUB_ENV"
 
+      - name: Prepare MLflow experiment artifacts
+        shell: bash
+        run: |
+          python - <<'PY'
+          import mlflow
+          from pathlib import Path
+
+          name = "iris-workflow-ci"
+          if mlflow.get_experiment_by_name(name) is None:
+              mlflow.create_experiment(
+                  name,
+                  artifact_location=(Path.cwd() / "mlartifacts").as_uri(),
+              )
+          PY
+
       - name: Run MLflow Project and retrain model
         shell: bash -el {0}
         run: mlflow run ./MLProject --env-manager=local --experiment-name iris-workflow-ci
+
+      - name: Verify MLflow outputs
+        shell: bash
+        run: |
+          test -s mlflow.db
+          test -d mlartifacts
+          test -s MLProject/modelling.log
+          grep -q "Model selesai dilatih" MLProject/modelling.log
+          test -s MLProject/dataset_preprocessing.csv
 
       - name: Save MLflow results
         if: always()
@@ -42,4 +66,5 @@ jobs:
             mlflow.db
             mlartifacts/
             MLProject/modelling.log
-          if-no-files-found: warn
+            MLProject/dataset_preprocessing.csv
+          if-no-files-found: error

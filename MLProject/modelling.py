@@ -6,7 +6,7 @@ from pathlib import Path
 
 import mlflow
 import mlflow.sklearn
-from sklearn.datasets import load_iris
+import pandas as pd
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report
@@ -16,6 +16,16 @@ from sklearn.preprocessing import StandardScaler
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
+ARTIFACT_DIR = PROJECT_DIR.parent / "mlartifacts"
+DATASET_PATH = PROJECT_DIR / "dataset_preprocessing.csv"
+EXPERIMENT_NAME = "iris-workflow-ci"
+FEATURE_COLUMNS = [
+    "sepal length (cm)",
+    "sepal width (cm)",
+    "petal length (cm)",
+    "petal width (cm)",
+]
+TARGET_NAMES = ["setosa", "versicolor", "virginica"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,26 +55,45 @@ def main() -> None:
     if not 0 < args.test_size < 1:
         raise ValueError("--test-size must be between 0 and 1.")
 
-    mlflow.set_experiment("iris-workflow-ci")
+    if mlflow.get_experiment_by_name(EXPERIMENT_NAME) is None:
+        mlflow.create_experiment(
+            EXPERIMENT_NAME,
+            artifact_location=ARTIFACT_DIR.resolve().as_uri(),
+        )
+    mlflow.set_experiment(EXPERIMENT_NAME)
     mlflow.sklearn.autolog(log_models=True, log_input_examples=False)
 
-    iris = load_iris(as_frame=True)
+    data = pd.read_csv(DATASET_PATH)
+    required_columns = {*FEATURE_COLUMNS, "target", "species"}
+    missing_columns = required_columns.difference(data.columns)
+    if missing_columns:
+        raise ValueError(f"Dataset is missing required columns: {sorted(missing_columns)}")
+
+    X = data[FEATURE_COLUMNS]
+    y = data["target"].astype(int)
     X_train, X_test, y_train, y_test = train_test_split(
-        iris.data,
-        iris.target,
+        X,
+        y,
         test_size=args.test_size,
         random_state=args.random_state,
-        stratify=iris.target,
+        stratify=y,
     )
     model = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
-            ("classifier", LogisticRegression(max_iter=1000, random_state=args.random_state)),
+            (
+                "classifier",
+                LogisticRegression(max_iter=1000, random_state=args.random_state),
+            ),
         ]
     )
 
-    logger.info("Dataset Iris dimuat: %d baris, %d fitur.", *iris.data.shape)
+    logger.info(
+        "Dataset Iris dimuat dari %s: %d baris, %d fitur.",
+        DATASET_PATH.name,
+        *X.shape,
+    )
     logger.info(
         "Data dibagi: %d data latih dan %d data uji.",
         len(X_train),
@@ -75,13 +104,14 @@ def main() -> None:
         mlflow.log_params(
             {
                 "dataset": "Iris",
-                "n_samples": iris.data.shape[0],
-                "n_features": iris.data.shape[1],
+                "n_samples": X.shape[0],
+                "n_features": X.shape[1],
                 "test_size": args.test_size,
                 "random_state": args.random_state,
                 "preprocessing": "median imputation + standard scaling",
             }
         )
+        mlflow.log_artifact(str(DATASET_PATH))
         model.fit(X_train, y_train)
         predictions = model.predict(X_test)
         test_accuracy = accuracy_score(y_test, predictions)
@@ -94,7 +124,7 @@ def main() -> None:
             classification_report(
                 y_test,
                 predictions,
-                target_names=iris.target_names,
+                target_names=TARGET_NAMES,
                 zero_division=0,
             ),
         )
