@@ -1,0 +1,116 @@
+name: MLflow Project CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Conda environment
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: breast-cancer-mlflow
+          environment-file: MLProject/conda.yaml
+          auto-activate: true
+          channels: conda-forge
+
+      - name: Configure local MLflow tracking
+        shell: bash
+        run: echo "MLFLOW_TRACKING_URI=sqlite:///$GITHUB_WORKSPACE/mlflow.db" >> "$GITHUB_ENV"
+
+      - name: Validate Breast Cancer Wisconsin dataset
+        shell: bash -el {0}
+        run: |
+          python - <<'PY'
+          import pandas as pd
+
+          dataset = pd.read_csv("MLProject/dataset_preprocessing.csv")
+          required = {"diagnosis", "target"}
+          features = [column for column in dataset.columns if column not in required]
+          assert len(dataset) == 569, f"Expected 569 rows, got {len(dataset)}"
+          assert len(features) == 30, f"Expected 30 features, got {len(features)}"
+          assert set(dataset["target"].unique()) == {0, 1}
+          assert set(zip(dataset["diagnosis"], dataset["target"])) == {
+              ("malignant", 0),
+              ("benign", 1),
+          }
+          assert all(pd.api.types.is_numeric_dtype(dataset[column]) for column in features)
+          print("Validated 569 samples, 30 numeric features, and malignant/benign labels.")
+          PY
+
+      - name: Prepare MLflow experiment artifacts
+        shell: bash -el {0}
+        run: |
+          python - <<'PY'
+          import mlflow
+          from pathlib import Path
+
+          name = "breast-cancer-workflow-ci"
+          if mlflow.get_experiment_by_name(name) is None:
+              mlflow.create_experiment(
+                  name,
+                  artifact_location=(Path.cwd() / "mlartifacts").as_uri(),
+              )
+          PY
+
+      - name: Run MLflow Project and retrain model
+        shell: bash -el {0}
+        run: mlflow run ./MLProject --env-manager=local --experiment-name breast-cancer-workflow-ci
+
+      - name: Verify MLflow outputs
+        shell: bash -el {0}
+        run: |
+          test -s mlflow.db
+          test -d mlartifacts
+          test -s MLProject/modelling.log
+          grep -q "Model training completed" MLProject/modelling.log
+          test -s MLProject/dataset_preprocessing.csv
+          python - <<'PY'
+          import mlflow
+          from pathlib import Path
+
+          experiment = mlflow.get_experiment_by_name("breast-cancer-workflow-ci")
+          assert experiment is not None, "MLflow experiment was not created"
+          runs = mlflow.search_runs(
+              experiment_ids=[experiment.experiment_id],
+              order_by=["attribute.end_time DESC"],
+              max_results=1,
+          )
+          assert not runs.empty, "No completed MLflow run was recorded"
+          run = runs.iloc[0]
+          assert run["status"] == "FINISHED", f"Latest run status: {run['status']}"
+          assert run["params.dataset"] == "Breast Cancer Wisconsin (Diagnostic)"
+          for metric in (
+              "metrics.test_accuracy",
+              "metrics.test_precision_macro",
+              "metrics.test_recall_macro",
+              "metrics.test_f1_macro",
+          ):
+              assert 0 <= run[metric] <= 1, f"Invalid metric {metric}: {run[metric]}"
+          models = list(Path("mlartifacts/models").rglob("MLmodel"))
+          assert models, "MLflow model artifact was not produced"
+          print(f"Verified MLflow run {run['run_id']} and model artifact {models[0]}")
+          PY
+
+      - name: Save MLflow results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: breast-cancer-mlflow-results
+          path: |
+            mlflow.db
+            mlartifacts/
+            MLProject/modelling.log
+            MLProject/dataset_preprocessing.csv
+          if-no-files-found: error
